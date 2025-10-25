@@ -1,6 +1,12 @@
 import React from "react";
-import MonteCarloSimulator from "./MonteCarloSimulator_calibrated_v4_sanity;
+import MonteCarloSimulator from "./MonteCarloSimulator_calibrated_v4_sanity";
 
-export default function App() {
-  return <MonteCarloSimulator />;
+function App() {
+  return (
+    <div className="App">
+      <MonteCarloSimulator />
+    </div>
+  );
 }
+
+export default App;
