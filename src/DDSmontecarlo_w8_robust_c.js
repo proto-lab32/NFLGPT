@@ -11,6 +11,75 @@ import { Upload, Play, BarChart3, TrendingUp, Settings, Bug, AlertTriangle } fro
  */
 
 const DDSmontecarlo = () => {
+
+  // --- Helper: find team column robustly ---
+  const findTeamKey = (header) => {
+    const candidates = ["Team","team","TEAM","Name","name"];
+    const lc = new Set(header.map(h => (h||"").toLowerCase().trim()));
+    for (const c of candidates) {
+      if (lc.has(c.toLowerCase())) return header.find(h => h.toLowerCase().trim() === c.toLowerCase());
+    }
+    // fuzzy contains 'team' or 'name'
+    for (const h of header) {
+      const t = (h||"").toLowerCase().trim();
+      if (t.includes("team") || t === "name") return h;
+    }
+    return null;
+  };
+
+
+  // --- Robust CSV parsing (RFC4180-ish) ---
+  // - Handles quotes, embedded commas, CRLF, optional BOM
+  // - Auto-detects delimiter: comma or tab
+  const parseCSV = (text) => {
+    // Strip BOM
+    if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+    // Normalize line endings
+    text = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+
+    // Detect delimiter by header
+    const firstLine = text.split('\n')[0] || "";
+    const delim = (firstLine.match(/\t/) && !firstLine.match(/,/)) ? '\t' : ',';
+
+    const rows = [];
+    let i = 0, field = '', row = [], inQuotes = false;
+    while (i < text.length) {
+      const ch = text[i];
+      if (inQuotes) {
+        if (ch === '"') {
+          if (i + 1 < text.length && text[i + 1] === '"') {
+            field += '"'; i += 2; continue; // escaped quote
+          } else {
+            inQuotes = false; i++; continue;
+          }
+        } else {
+          field += ch; i++; continue;
+        }
+      } else {
+        if (ch === '"') { inQuotes = true; i++; continue; }
+        if (ch === delim) { row.push(field.trim()); field = ''; i++; continue; }
+        if (ch === '\n') { row.push(field.trim()); rows.push(row); row = []; field = ''; i++; continue; }
+        field += ch; i++; continue;
+      }
+    }
+    // push last field
+    row.push(field.trim()); rows.push(row);
+
+    // Remove any trailing empty rows
+    while (rows.length && rows[rows.length-1].every(c => c === "")) rows.pop();
+
+    if (!rows.length) return { header: [], records: [] };
+
+    // Build header map
+    const header = rows[0].map(h => (h || "").trim());
+    const records = rows.slice(1).map(cols => {
+      const o = {};
+      for (let j = 0; j < header.length; j++) o[header[j]] = (cols[j] ?? "").trim();
+      return o;
+    });
+    return { header, records };
+  };
+
   // League baselines
   const params = {
     lg: {
@@ -56,30 +125,30 @@ const DDSmontecarlo = () => {
   const aliases = {
     // Offense
     off_ppd: ["off_ppd","Off PPD","Off. PPD","PPD Offense","Off Points/Drive","Off Pts/Drive"],
-    off_epa: ["off_epa","Off EPA","Off EPA/Play","Off EPA per Play","EPA/play Offense","EPA per Play Off","Off EPA/play"],
+    off_epa: ["off_epa","Off EPA","Off EPA/Play","Off EPA per Play","EPA/play Offense","EPA per Play Off"],
     off_sr:  ["off_sr","Off SR","Off Success Rate","Off Success %","Off Success%","Off SR%","Success Rate Off"],
     off_rz:  ["off_rz","Off Red-Zone TD%","Off RZ TD%","Off RZ%","Red Zone TD% Off"],
     off_3out:["off_3out","Off 3-Out %","Off Three-And-Out %","Off 3&Out %","3 and out % Off","3-Out% Off"],
-    off_xpl: ["off_xpl","Off Explosive %","Off Xpl%","Explosive Rate Off","% Explosive Plays Off","Off Explosive Rate"],
-    off_penalties:["off_penalties","Off Penalties","Off Pen Yds/G","Off Pen Yds/GM","Off Penalty Yds","Off Penalties per Drive"],
-    off_to_epa:["off_to_epa","Off TO EPA","Turnover EPA Off","TO EPA (Off)","Off TO EPA per Drive"],
-    off_fp:  ["off_fp","Off FP","Off Field Position","Avg Start Ydline Off","Starting FP Off","Off Avg Starting FP"],
+    off_xpl: ["off_xpl","Off Explosive %","Off Xpl%","Explosive Rate Off","% Explosive Plays Off"],
+    off_penalties:["off_penalties","Off Penalties","Off Pen Yds/G","Off Pen Yds/GM","Off Penalty Yds"],
+    off_to_epa:["off_to_epa","Off TO EPA","Turnover EPA Off","TO EPA (Off)"],
+    off_fp:  ["off_fp","Off FP","Off Field Position","Avg Start Ydline Off","Starting FP Off"],
     // Defense
     def_ppd_allowed:["def_ppd_allowed","Def PPD Allowed","Def PPD","PPD Defense Allowed","Points/Drive Allowed"],
-    def_epa_allowed:["def_epa_allowed","Def EPA","Def EPA/Play Allowed","EPA per Play Allowed","EPA/play Def","Def EPA/play allowed"],
-    def_sr:  ["def_sr","Def SR","Def Success Rate Allowed","Def Success %","Success Rate Allowed","Def Success Rate"],
-    def_rz:  ["def_rz","Def Red-Zone TD% Allowed","Def RZ TD%","Red Zone TD% Allowed","Def Red Zone TD %"],
+    def_epa_allowed:["def_epa_allowed","Def EPA","Def EPA/Play Allowed","EPA per Play Allowed","EPA/play Def"],
+    def_sr:  ["def_sr","Def SR","Def Success Rate Allowed","Def Success %","Success Rate Allowed"],
+    def_rz:  ["def_rz","Def Red-Zone TD% Allowed","Def RZ TD%","Red Zone TD% Allowed"],
     def_3out:["def_3out","Def 3-Out %","Def Three-And-Out %","Def 3&Out %","3-Out% Def"],
-    def_xpl: ["def_xpl","Def Explosive % Allowed","Def Xpl%","Explosive Allowed %","Def Explosive Rate"],
-    def_penalties:["def_penalties","Def Penalties","Def Pen Yds/G","Def Pen Yds/GM","Def Penalty Yds","DEF Penalties per Drive"],
+    def_xpl: ["def_xpl","Def Explosive % Allowed","Def Xpl%","Explosive Allowed %"],
+    def_penalties:["def_penalties","Def Penalties","Def Pen Yds/G","Def Pen Yds/GM","Def Penalty Yds"],
     // Macro / Pace
     off_dvoa:["off_dvoa","Off DVOA","Off DVOA %","Offense DVOA"],
     def_dvoa:["def_dvoa","Def DVOA","Def DVOA %","Defense DVOA"],
     off_drives:["off_drives","Off Drives/G","Off Drives per G","Off. Drives/G"],
     def_drives:["def_drives","Def Drives/G","Def Drives per G","Def. Drives/G"],
-    off_plays:["off_plays","Off Plays/G","Off Plays per G","Off Plays/Drive"],
-    def_plays:["def_plays","Def Plays/G","Def Plays per G","Def Plays/Drive Allowed"],
-    ed_pass:["ed_pass","ED Pass Rate","Early Down Pass%","Early-Down Pass %","ED Pass%","Neutral Early-Down Pass %"],
+    off_plays:["off_plays","Off Plays/G","Off Plays per G"],
+    def_plays:["def_plays","Def Plays/G","Def Plays per G"],
+    ed_pass:["ed_pass","ED Pass Rate","Early Down Pass%","Early-Down Pass %","ED Pass%"],
     no_huddle:["no_huddle","No-Huddle %","No Huddle%","NoHuddle%"],
     Team:["Team","team","TEAM","Name"],
   };
@@ -302,59 +371,23 @@ const DDSmontecarlo = () => {
     setResults(res);
   };
 
-  // --- CSV parser helper (handles quoted fields) ---
-  const parseCSVLine = (line) => {
-    const result = [];
-    let current = '';
-    let inQuotes = false;
-    
-    for (let i = 0; i < line.length; i++) {
-      const char = line[i];
-      const nextChar = line[i + 1];
-      
-      if (char === '"') {
-        if (inQuotes && nextChar === '"') {
-          current += '"';
-          i++;
-        } else {
-          inQuotes = !inQuotes;
-        }
-      } else if (char === ',' && !inQuotes) {
-        result.push(current.trim());
-        current = '';
-      } else {
-        current += char;
-      }
-    }
-    result.push(current.trim());
-    return result;
-  };
-
   // --- CSV upload (alias-aware) ---
   const handleCSVUpload = async (file) => {
     try {
-      let text = await file.text();
-      // Remove BOM if present
-      if (text.charCodeAt(0) === 0xFEFF) {
-        text = text.slice(1);
-      }
-      
-      const lines = text.split(/\r?\n/).filter(line => line.trim());
-      const header = parseCSVLine(lines[0]);
-      const rows = lines.slice(1).map(line => {
-        const cols = parseCSVLine(line);
-        const o = {};
-        header.forEach((h, i) => o[h] = cols[i]);
-        return o;
-      });
+      const text = await file.text();
+      const { header, records } = parseCSV(text);
+      const teamKey = findTeamKey(header);
+      if (!teamKey) { setUploadStatus("❌ Error: Could not find a Team column."); return; }
+      const rows = records;
 
       const nextDB = {}; const names = []; const health = {};
       rows.forEach(raw => {
-        const { rec, missing } = parseRow(raw);
-        if (!rec.Team) return;
-        names.push(rec.Team);
-        nextDB[rec.Team] = rec;
-        if (missing.length) health[rec.Team] = missing;
+        const teamName = (raw[teamKey] || "").trim();
+        if (!teamName) return;
+        const { rec, missing } = parseRow({ ...raw, Team: teamName });
+        names.push(teamName);
+        nextDB[teamName] = rec;
+        if (missing.length) health[teamName] = missing;
       });
 
       if (names.length === 0) { setUploadStatus("❌ Error: No teams found. Ensure a 'Team' column."); return; }
