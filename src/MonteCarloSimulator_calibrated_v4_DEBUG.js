@@ -159,12 +159,13 @@ const MonteCarloSimulator = () => {
     const ppd_net = z_off.PPD + z_def.PPD;
     const xpl_net = z_off.Xpl + z_def.Xpl;
     const rz_net  = z_off.RZ  + z_def.RZ;
-    const out_eff = (z_def.OUT - z_off.OUT);
+    const out_eff = (z_off.OUT - z_def.OUT);  // Lower offense 3-out + lower defense 3-out = better offense
 
     const ppd_resid = ppd_net - (C.c1*epa_net + C.c2*sr_net);
 
-    // DVOA parsed as fraction already; convert to z by dividing by sd (no /100 now)
-    const dvoa_net = (team.off_dvoa)/L.DVOA_sd + (opp.def_dvoa)/L.DVOA_sd;
+    // DVOA parsed as fraction already; convert to z by dividing by sd
+    // Off DVOA: positive = good. Def DVOA: negative = good defense, so subtract it (good defense hurts offense)
+    const dvoa_net = (team.off_dvoa)/L.DVOA_sd - (opp.def_dvoa)/L.DVOA_sd;
     const z_to = (team.off_to_epa)/L.TOEPA_sd;
     const z_fp = (team.off_fp - L.FP_mu)/L.FP_sd;
     const pen_mix = (-z_off.PEN + z_def.PEN);
@@ -198,20 +199,23 @@ const MonteCarloSimulator = () => {
     const H = teamDB[homeTeam]; const A = teamDB[awayTeam];
     const nH = computeNets(H, A);
     const nA = computeNets(A, H);
-    const ppdH = mapZtoPPD(nH.ensemble_z) + (hfaAdjustment/24);
-    const ppdA = mapZtoPPD(nA.ensemble_z);
     const { gameDrives, posShare } = computePace(H, A, nH);
+    const homeDrives = gameDrives * posShare;
+    const ppdH = mapZtoPPD(nH.ensemble_z) + (hfaAdjustment / homeDrives);
+    const ppdA = mapZtoPPD(nA.ensemble_z);
     const homeMean = ppdH * gameDrives * posShare;
     const awayMean = ppdA * gameDrives * (1-posShare);
+    const { contrib: home_contrib, ensemble_z: z_home, ...home_nets } = nH;
+    const { contrib: away_contrib, ensemble_z: z_away, ...away_nets } = nA;
+
     setOut({
       home: homeTeam, away: awayTeam,
       homeMean, awayMean, spread: homeMean - awayMean,
       gameDrives, posShare,
       weights: W,
-      home_contrib: nH.contrib, away_contrib: nA.contrib,
-      home_nets: (({...nH}), delete nH.contrib, delete nH.ensemble_z, nH),
-      away_nets: (({...nA}), delete nA.contrib, delete nA.ensemble_z, nA),
-      z_home: nH.ensemble_z, z_away: nA.ensemble_z
+      home_contrib, away_contrib,
+      home_nets, away_nets,
+      z_home, z_away
     });
   };
 
