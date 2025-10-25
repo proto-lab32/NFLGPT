@@ -1,14 +1,12 @@
-import React, { useState, useMemo } from "react";
-import { Upload, Play, BarChart3, TrendingUp, Settings } from "lucide-react";
+import React, { useState } from "react";
+import { Upload, Play, BarChart3, TrendingUp, Settings, Bug } from "lucide-react";
 
 /**
- * NFL Monte Carlo Game Simulator (rewritten)
- * - Uses NET features (off − def) instead of averaging independent offense/defense scores
- * - Residualizes PPD on EPA & SR with fixed coefficients (c1, c2)
- * - Treats DVOA as a prior (smaller weight than EPA/SR)
- * - Builds matchup-specific variance from 3&out (inflater) & SR (deflater)
- * - Uses SHARED game drives with possession-share tilt
- * - Applies HFA to the HOME side only (so margin shift == HFA)
+ * NFL Monte Carlo Game Simulator (Gaussian) — v2
+ * - FIXED: shared game drives now SUM two off/def averages (~22–26 baseline), clamp [20,30]
+ * - Debug panel shows gameDrives, posShare, per-team drives & PPD used in sim
+ * - Uses NET features (off − def), PPD residualization (c1=0.56, c2=0.21)
+ * - DVOA acts as prior; variance tied to 3&Out (up) and SR (down)
  */
 
 const MonteCarloSimulator = () => {
@@ -67,6 +65,7 @@ const MonteCarloSimulator = () => {
   const [uploadStatus, setUploadStatus] = useState("");
   const [simulationResults, setSimulationResults] = useState(null);
   const [isSimulating, setIsSimulating] = useState(false);
+  const [showDebug, setShowDebug] = useState(true);
 
   const parseNum = (val, def) => {
     if (val === null || val === undefined || val === "") return def;
@@ -132,20 +131,25 @@ const MonteCarloSimulator = () => {
     return { epa_net, sr_net, ppd_resid, xpl_net, rz_net, out_net, z_pen_o, z_pen_d };
   };
 
-  // Compute shared game drives and possession share tilt
+  // Compute shared game pace (FIXED drives calc) and possession share tilt
   const computeGamePace = (homeTeam, awayTeam, awayDef, homeDef, netsHome) => {
     const w = params.weights;
-    // baseline shared drives from offense/defense
-    const baseDrives = ((homeTeam.off_drives + awayDef.def_drives) / 2 + (awayTeam.off_drives + homeDef.def_drives) / 2) / 2;
+    // Per-team averages (~11–12 each)
+    const offDefAvgHome = (homeTeam.off_drives + awayDef.def_drives) / 2;
+    const offDefAvgAway = (awayTeam.off_drives + homeDef.def_drives) / 2;
+    // SUM to get game-level drives (~22–24), then apply pace factors
+    let gameDrives = (offDefAvgHome + offDefAvgAway);
+
     const nh_boost = ((homeTeam.no_huddle || 0) + (awayTeam.no_huddle || 0)) / 2 * w.NoHuddle * 0.5;
     const ed_adj   = (((homeTeam.ed_pass || 0) - 0.5) + ((awayTeam.ed_pass || 0) - 0.5)) / 2 * w.Pace_EDPass;
-    let gameDrives = baseDrives * (1 + nh_boost + ed_adj);
-    gameDrives = Math.min(28, Math.max(18, gameDrives));
+    gameDrives = gameDrives * (1 + nh_boost + ed_adj);
+
+    // Clamp to realistic combined drives per game
+    gameDrives = Math.min(30, Math.max(20, gameDrives)); // typical ~22–26
 
     // Possession share tilt by SR/EPA nets (home perspective)
     let posShare = 0.5 + 0.15 * (netsHome.sr_net + 0.5 * netsHome.epa_net);
     posShare = Math.max(0.35, Math.min(0.65, posShare));
-
     return { gameDrives, posShare };
   };
 
@@ -184,49 +188,11 @@ const MonteCarloSimulator = () => {
     };
   };
 
-  // CSV uploader
-  const handleCSVUpload = async (file) => {
-    try {
-      const text = await file.text();
-      // Basic CSV parse (no external libs to keep it deployable)
-      const lines = text.split(/\r?\n/).filter(Boolean);
-      const header = lines[0].split(",").map((h) => h.trim());
-      const rows = lines.slice(1).map((line) => {
-        const cols = line.split(",");
-        const obj = {};
-        header.forEach((h, i) => (obj[h] = cols[i]));
-        return obj;
-      });
-
-      const nextDB = {};
-      const names = [];
-      rows.forEach((row) => {
-        const name = String(row["Team"] || row["team"] || "").trim();
-        if (!name) return;
-        names.push(name);
-        nextDB[name] = { ...row };
-      });
-
-      if (names.length === 0) {
-        setUploadStatus("❌ Error: No teams found. Make sure CSV has 'Team' column.");
-        return;
-      }
-
-      setTeamDB(nextDB);
-      setTeamList(names.sort());
-      setUploadStatus(`✅ Loaded ${names.length} teams`);
-      setSimulationResults(null);
-    } catch (e) {
-      setUploadStatus(`❌ Error: ${e?.message || e}`);
-    }
-  };
-
   // Core: map nets & priors to expected points and variance (Gaussian sampling)
+  // (Returns debug details: drives & ppd)
   const estimateScore = (team, oppDefense, isHome, hfa, gameDrives, posShare, nets) => {
     const lg = params.lg;
     const w = params.weights;
-
-    // Use provided nets
     const { epa_net, sr_net, ppd_resid, xpl_net, rz_net, out_net, z_pen_o, z_pen_d } = nets;
 
     // Mean advantage from nets
@@ -238,7 +204,7 @@ const MonteCarloSimulator = () => {
       rz_net    * w.RZ  +
       out_net   * w.ThreeOut_eff;
 
-    // DVOA prior & ancillaries (use raw values passed on team/def)
+    // DVOA prior & ancillaries
     const dvoa_adj = (team.off_dvoa / 100) * w.DVOA_off - (oppDefense.def_dvoa / 100) * w.DVOA_def;
     const to_adj   = (team.off_to_epa * w.TO_EPA) / lg.Drives;
     const fp_adj   = ((team.off_fp - 25) / 10) * w.FP;
@@ -271,7 +237,7 @@ const MonteCarloSimulator = () => {
     const volDown = 1 - 0.6 * Math.max(0, sr_net2);
     const std_dev = Math.sqrt(baseVar * volUp * Math.max(0.6, volDown));
 
-    return { points: Math.max(0, pts), std_dev };
+    return { points: Math.max(0, pts), std_dev, drives, ppd };
   };
 
   const runSimulation = () => {
@@ -296,7 +262,7 @@ const MonteCarloSimulator = () => {
     // Shared pace and possession share (home perspective nets)
     const { gameDrives, posShare } = computeGamePace(homeData, awayData, awayData, homeData, netsHome);
 
-    // Calculate projections with their standard deviations
+    // Calculate projections with their standard deviations (now includes drives & ppd debug)
     const homeProjection = estimateScore(homeData, awayData, true, effectiveHFA, gameDrives, posShare, netsHome);
     const awayProjection = estimateScore(awayData, homeData, false, effectiveHFA, gameDrives, posShare, netsAway);
 
@@ -359,9 +325,51 @@ const MonteCarloSimulator = () => {
       spreadDist: {
         p10: percentile(spreads, 0.10), p25: percentile(spreads, 0.25), p50: percentile(spreads, 0.50), p75: percentile(spreads, 0.75), p90: percentile(spreads, 0.90)
       },
+      debug: {
+        gameDrives,
+        posShare,
+        home: { drives: homeProjection.drives, ppd: homeProjection.ppd },
+        away: { drives: awayProjection.drives, ppd: awayProjection.ppd },
+      }
     };
 
     setSimulationResults(result);
+  };
+
+  const handleCSVUpload = async (file) => {
+    try {
+      const text = await file.text();
+      // Basic CSV parse (no external libs to keep it deployable)
+      const lines = text.split(/\r?\n/).filter(Boolean);
+      const header = lines[0].split(",").map((h) => h.trim());
+      const rows = lines.slice(1).map((line) => {
+        const cols = line.split(",");
+        const obj = {};
+        header.forEach((h, i) => (obj[h] = cols[i]));
+        return obj;
+      });
+
+      const nextDB = {};
+      const names = [];
+      rows.forEach((row) => {
+        const name = String(row["Team"] || row["team"] || "").trim();
+        if (!name) return;
+        names.push(name);
+        nextDB[name] = { ...row };
+      });
+
+      if (names.length === 0) {
+        setUploadStatus("❌ Error: No teams found. Make sure CSV has 'Team' column.");
+        return;
+      }
+
+      setTeamDB(nextDB);
+      setTeamList(names.sort());
+      setUploadStatus(`✅ Loaded ${names.length} teams`);
+      setSimulationResults(null);
+    } catch (e) {
+      setUploadStatus(`❌ Error: ${e?.message || e}`);
+    }
   };
 
   const handleSimulateClick = async () => {
@@ -387,7 +395,7 @@ const MonteCarloSimulator = () => {
 
   return (
     <div className="p-6 max-w-5xl mx-auto">
-      <h1 className="text-2xl font-bold mb-4 flex items-center gap-2"><BarChart3 size={22}/> NFL Monte Carlo Game Simulator</h1>
+      <h1 className="text-2xl font-bold mb-4 flex items-center gap-2"><BarChart3 size={22}/> NFL Monte Carlo Game Simulator (Gaussian v2)</h1>
 
       <div className="grid md:grid-cols-3 gap-4 mb-6">
         <div className="md:col-span-1 border rounded p-4">
@@ -426,6 +434,13 @@ const MonteCarloSimulator = () => {
           <button onClick={handleSimulateClick} disabled={!homeTeam || !awayTeam || isSimulating} className="mt-4 inline-flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded">
             <Play size={16}/> {isSimulating ? "Simulating..." : "Run Monte Carlo"}
           </button>
+
+          <div className="mt-3 flex items-center gap-2 text-sm">
+            <label className="inline-flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" checked={showDebug} onChange={(e)=>setShowDebug(e.target.checked)} />
+              <Bug size={16}/> Show debug panel
+            </label>
+          </div>
         </div>
       </div>
 
@@ -461,35 +476,36 @@ const MonteCarloSimulator = () => {
             </div>
           </div>
 
-          <div className="grid md:grid-cols-2 gap-4 mt-4">
-            <div>
-              <h4 className="font-semibold">Total Distribution (p10/p25/p50/p75/p90)</h4>
-              <div className="text-sm mt-2">
-                {Object.values(simulationResults.totalDist).map((v, i) => (
-                  <span key={i} className="inline-block mr-3">{v}</span>
-                ))}
+          {showDebug && (
+            <div className="mt-4 border-t pt-3 text-sm">
+              <h3 className="font-semibold mb-2">Debug</h3>
+              <div className="grid md:grid-cols-3 gap-4">
+                <div>
+                  <div><strong>gameDrives</strong>: {simulationResults.debug.gameDrives.toFixed(2)}</div>
+                  <div><strong>posShare</strong>: {(simulationResults.debug.posShare*100).toFixed(1)}%</div>
+                </div>
+                <div>
+                  <div><strong>Home drives</strong>: {simulationResults.debug.home.drives.toFixed(2)}</div>
+                  <div><strong>Home PPD</strong>: {simulationResults.debug.home.ppd.toFixed(3)}</div>
+                </div>
+                <div>
+                  <div><strong>Away drives</strong>: {simulationResults.debug.away.drives.toFixed(2)}</div>
+                  <div><strong>Away PPD</strong>: {simulationResults.debug.away.ppd.toFixed(3)}</div>
+                </div>
               </div>
             </div>
-            <div>
-              <h4 className="font-semibold">Spread Distribution (p10/p25/p50/p75/p90)</h4>
-              <div className="text-sm mt-2">
-                {Object.values(simulationResults.spreadDist).map((v, i) => (
-                  <span key={i} className="inline-block mr-3">{v}</span>
-                ))}
-              </div>
-            </div>
-          </div>
+          )}
         </div>
       )}
 
       <div className="mt-6 border rounded p-4">
         <h2 className="font-semibold mb-2 flex items-center gap-2"><Settings size={18}/> Notes</h2>
         <ul className="text-sm list-disc pl-5 space-y-1">
-          <li>PPD is residualized on EPA & SR with c1=0.56, c2=0.21 (from prior discussion).</li>
-          <li>DVOA is treated as a prior (smaller weight than EPA/SR) and blended at the mean layer.</li>
+          <li><strong>FIXED:</strong> shared game drives use SUM of off/def averages and clamp to [20,30].</li>
+          <li>PPD is residualized on EPA & SR with c1=0.56, c2=0.21.</li>
+          <li>DVOA is a prior (smaller weight than EPA/SR) blended at the mean layer.</li>
           <li>Variance is matchup-specific: higher 3&out → fatter tails; higher SR → skinnier tails.</li>
-          <li>Shared game drives with a mild possession-share tilt based on EPA/SR nets.</li>
-          <li>HFA is applied to the home side only, preserving the total margin shift.</li>
+          <li>HFA applied to home side only (margin shift preserved).</li>
         </ul>
       </div>
     </div>
