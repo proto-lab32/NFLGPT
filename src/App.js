@@ -1,5 +1,5 @@
 import React from "react";
-import MonteCarloSimulator from "./MonteCarloSimulator_rewrite_v2";
+import MonteCarloSimulator from "./DDSmontecarlo_w8";
 
 export default function App() {
   return <MonteCarloSimulator />;
