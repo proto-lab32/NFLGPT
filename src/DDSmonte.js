@@ -302,15 +302,50 @@ const DDSmontecarlo = () => {
     setResults(res);
   };
 
+  // --- CSV parser helper (handles quoted fields) ---
+  const parseCSVLine = (line) => {
+    const result = [];
+    let current = '';
+    let inQuotes = false;
+    
+    for (let i = 0; i < line.length; i++) {
+      const char = line[i];
+      const nextChar = line[i + 1];
+      
+      if (char === '"') {
+        if (inQuotes && nextChar === '"') {
+          current += '"';
+          i++;
+        } else {
+          inQuotes = !inQuotes;
+        }
+      } else if (char === ',' && !inQuotes) {
+        result.push(current.trim());
+        current = '';
+      } else {
+        current += char;
+      }
+    }
+    result.push(current.trim());
+    return result;
+  };
+
   // --- CSV upload (alias-aware) ---
   const handleCSVUpload = async (file) => {
     try {
-      const text = await file.text();
-      const lines = text.split(/\r?\n/).filter(Boolean);
-      const header = lines[0].split(",").map(h=>h.trim());
+      let text = await file.text();
+      // Remove BOM if present
+      if (text.charCodeAt(0) === 0xFEFF) {
+        text = text.slice(1);
+      }
+      
+      const lines = text.split(/\r?\n/).filter(line => line.trim());
+      const header = parseCSVLine(lines[0]);
       const rows = lines.slice(1).map(line => {
-        const cols = line.split(",");
-        const o = {}; header.forEach((h,i)=>o[h]=cols[i]); return o;
+        const cols = parseCSVLine(line);
+        const o = {};
+        header.forEach((h, i) => o[h] = cols[i]);
+        return o;
       });
 
       const nextDB = {}; const names = []; const health = {};
