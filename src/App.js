@@ -1,5 +1,5 @@
 import React from "react";
-import MonteCarloSimulator from "./MonteCarloSimulator_calibrated_v4_sanity";
+import MonteCarloSimulator from "./MonteCarloSimulator_calibrated_v4_DEBUG";
 
 function App() {
   return (
