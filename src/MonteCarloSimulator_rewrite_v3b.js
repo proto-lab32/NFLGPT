@@ -10,6 +10,59 @@ import { Upload, Play, BarChart3, TrendingUp, Settings, Bug, AlertTriangle } fro
  */
 
 const MonteCarloSimulator = () => {
+
+  // --- Robust CSV parsing (RFC4180-ish) ---
+  // - Handles quotes, embedded commas, CRLF, optional BOM
+  // - Auto-detects delimiter: comma or tab
+  const parseCSV = (text) => {
+    // Strip BOM
+    if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+    // Normalize line endings
+    text = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+
+    // Detect delimiter by header
+    const firstLine = text.split('\n')[0] || "";
+    const delim = (firstLine.match(/\t/) && !firstLine.match(/,/)) ? '\t' : ',';
+
+    const rows = [];
+    let i = 0, field = '', row = [], inQuotes = false;
+    while (i < text.length) {
+      const ch = text[i];
+      if (inQuotes) {
+        if (ch === '"') {
+          if (i + 1 < text.length && text[i + 1] === '"') {
+            field += '"'; i += 2; continue; // escaped quote
+          } else {
+            inQuotes = false; i++; continue;
+          }
+        } else {
+          field += ch; i++; continue;
+        }
+      } else {
+        if (ch === '"') { inQuotes = true; i++; continue; }
+        if (ch === delim) { row.push(field.trim()); field = ''; i++; continue; }
+        if (ch === '\n') { row.push(field.trim()); rows.push(row); row = []; field = ''; i++; continue; }
+        field += ch; i++; continue;
+      }
+    }
+    // push last field
+    row.push(field.trim()); rows.push(row);
+
+    // Remove any trailing empty rows
+    while (rows.length && rows[rows.length-1].every(c => c === "")) rows.pop();
+
+    if (!rows.length) return { header: [], records: [] };
+
+    // Build header map
+    const header = rows[0].map(h => (h || "").trim());
+    const records = rows.slice(1).map(cols => {
+      const o = {};
+      for (let j = 0; j < header.length; j++) o[header[j]] = (cols[j] ?? "").trim();
+      return o;
+    });
+    return { header, records };
+  };
+
   const params = {
     lg: {
       PPD: 2.06, PPD_sd: 0.42,
@@ -270,12 +323,8 @@ const MonteCarloSimulator = () => {
   const handleCSVUpload = async (file) => {
     try {
       const text = await file.text();
-      const lines = text.split(/\r?\n/).filter(Boolean);
-      const header = lines[0].split(",").map(h=>h.trim());
-      const rows = lines.slice(1).map(line => {
-        const cols = line.split(",");
-        const o = {}; header.forEach((h,i)=>o[h]=cols[i]); return o;
-      });
+      const { header, records } = parseCSV(text);
+      const rows = records;
 
       const nextDB = {}; const names = []; const health = {};
       rows.forEach(raw => {
